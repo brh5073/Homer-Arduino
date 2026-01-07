@@ -1,180 +1,255 @@
-
 #include <Adafruit_GFX.h>    // Core graphics library
 #include "Adafruit_GC9A01A.h" // Hardware-specific library
-//#include <Wire.h>
 #include <SPI.h>
 
-long readUltrasonicDistance(int  trigPin, int echoPin);
-
-// Relay parameters
-const int numRelays = 6;
+// Relay parameters - 4 relay solid state module (low level trigger)
+const int numRelays = 4;
 const int relayPins[numRelays] = { 4, 5, 6, 7 };
 
+// Ultrasonic sensor pins
+#define trigPin A1
+#define echoPin A0
 
-#define trigPin 2
-#define echoPin 12 
-#define led 11
-
-//TFT is just for testing
-#define TFT_CS    10      // TFT CS pin is connected to Arduino pin 10
-#define TFT_RST   8       // TFT RST pin is connected to Arduino pin 9
-#define TFT_DC    9       // TFT DC pin is connected to Arduino pin 8
-
-#define TFT_CS2   6
-#define TFT_RST2  5
+// TFT display pins
+#define TFT_CS    10
+#define TFT_RST   -1
+#define TFT_DC    9
 
 Adafruit_GC9A01A tft = Adafruit_GC9A01A(TFT_CS, TFT_DC, TFT_RST);
-Adafruit_GC9A01A tft2 = Adafruit_GC9A01A(TFT_CS2, TFT_DC, TFT_RST2);
+
+// Variables for flicker-free display updates
+long lastDisplayedDistance = -1;
+int lastColorZone = -1;
+
+// Filtering variables
+long lastGoodDistance = 0;
+int agreementCount = 0;
+long pendingDistance = 0;
+
+const int requiredAgreements = 2;
+const int jumpThreshold = 40;
+
+// Hysteresis settings
+const int hysteresis = 4;  // Dead zone of +/- 3 inches around thresholds
+
+// Base thresholds
+const int yellowThreshold = 37;
+const int greenThreshold = 60;
+
+// Current zone (persists between loops)
+int currentZone = -1;  // 0=green, 1=yellow, 2=red
 
 void setup() {
   Serial.begin(9600);
 
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
 
-
-pinMode(trigPin, OUTPUT);
-pinMode(echoPin, INPUT);
-//pinMode(led, OUTPUT);
-
-// Set all relay pins as OUTPUT
- for (int i = 0; i < numRelays; i++) {
-   pinMode(relayPins[i], OUTPUT);
-   digitalWrite(relayPins[i], HIGH);  // Ensure all relays are initially off
- }
-
-  openRelay(0);
-  openRelay(1);
-  openRelay(2);
-  openRelay(3);
-  openRelay(4);
-  openRelay(5);
-
+  for (int i = 0; i < numRelays; i++) {
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], HIGH);
+  }
 
   tft.begin();
   tft.setRotation(2);
   tft.fillScreen(GC9A01A_BLACK);
-
-  tft2.begin();
-  tft2.setRotation(2);
-  tft2.fillScreen(GC9A01A_BLACK);
- 
-
+  
+  tft.setCursor(60, 160);
+  tft.setTextColor(GC9A01A_WHITE);
+  tft.setTextSize(3);
+  tft.print("inches");
 }
 
 void loop() {
-long duration, distance,distance_in;
+  long distance_in;
+  int colorZone;
+  uint16_t displayColor;
 
-digitalWrite(trigPin, LOW);
-delayMicroseconds(2);
-digitalWrite(trigPin, HIGH);
-delayMicroseconds(10);
-digitalWrite(trigPin, LOW);
-duration = pulseIn(echoPin, HIGH);
-distance = (duration/2) / 29.1;
-distance_in = distance * 0.393701; 
+  distance_in = getStableDistance();
 
-if (distance_in > 60)
-{ //digitalWrite(led,HIGH);
-Serial.println("Green");
-openRelay(0);
-closeRelay(1);
-closeRelay(2);
-closeRelay(3);
-closeRelay(4);
-closeRelay(5);
+  // Determine color zone with hysteresis
+  colorZone = getZoneWithHysteresis(distance_in);
 
-tft.fillScreen(GC9A01A_BLACK);
-  tft.setCursor(70, 70);
-  tft.setTextColor(GC9A01A_GREEN);
-  tft.setTextSize(8);
-  tft.print(distance_in);
-}
-else if (distance_in > 24 && distance_in < 60)
-{
+  if (colorZone == 0) {
+    displayColor = GC9A01A_GREEN;
+    setRelayPattern(0);
+    Serial.println("Green");
+  } 
+  else if (colorZone == 1) {
+    displayColor = GC9A01A_YELLOW;
+    setRelayPattern(1);
+    Serial.println("Yellow");
+  } 
+  else {
+    displayColor = GC9A01A_RED;
+    setRelayPattern(2);
+    Serial.println("Red");
+  }
 
-closeRelay(0);
-openRelay(1);
-closeRelay(2);
-closeRelay(3);
-closeRelay(4);
-closeRelay(5);
+  if (distance_in != lastDisplayedDistance || colorZone != lastColorZone) {
+    updateDisplay(distance_in, displayColor);
+    lastDisplayedDistance = distance_in;
+    lastColorZone = colorZone;
+  }
 
-Serial.println("Yellow");
-tft.fillScreen(GC9A01A_BLACK);
-  tft.setCursor(70, 70);
-  tft.setTextColor(GC9A01A_YELLOW);
-  tft.setTextSize(8);
-  tft.print(distance_in);
-}
-else if (distance_in < 24)
-{
-closeRelay(0);
-closeRelay(1);
-openRelay(2);
-closeRelay(3);
-closeRelay(4);
-closeRelay(5);
+  Serial.print("Displayed: ");
+  Serial.print(distance_in);
+  Serial.println(" in");
 
-Serial.println("Red");
-tft.fillScreen(GC9A01A_BLACK);
-  tft.setCursor(70, 70);
-  tft.setTextColor(GC9A01A_RED);
-  tft.setTextSize(8);
-  tft.print(distance_in);
-}
-Serial.print(distance_in);
-Serial.println(" in");
-Serial.println(duration);
-//delay(500);
-
-
-
-/*{
-  tft2.fillScreen(GC9A01A_BLACK);
-  int x0 = 40;
-int y0 = 160;  // Decrease y0 to move the triangle up
-int x1 = 120;
-int y1 = 40; // Decrease y1 to move the triangle up
-int x2 = 200;
-int y2 = 160;  // Decrease y2 to move the triangle up
-
-// Draw the filled triangle
-tft2.fillTriangle(x0, y0, x1, y1, x2, y2, GC9A01A_WHITE);
-}
-delay(5000);
-{
-  //Bottom of inning
-  // Define the coordinates for the vertices of the triangle
-  tft2.fillScreen(GC9A01A_BLACK);
-  int x0 = 40;
-  int y0 = 80;  // Increase y0 to move the triangle down
-  int x1 = 120;
-  int y1 = 200; // Increase y1 to move the triangle down
-  int x2 = 200;
-  int y2 = 80;  // Increase y2 to move the triangle down
-
-  // Draw the filled triangle
-  tft2.fillTriangle(x0, y0, x1, y1, x2, y2, GC9A01A_WHITE);
-}
-*/
   delay(100);
 }
 
-// Function to close a relay
-void closeRelay(int relayIndex) {
- {
-   digitalWrite(relayPins[relayIndex], LOW);
- }
- Serial.print("Relay ");
- Serial.print(relayIndex + 1);
- Serial.println(" low");
+// Get zone with hysteresis to prevent flickering at boundaries
+int getZoneWithHysteresis(long distance) {
+  // First time - just set zone based on distance
+  if (currentZone == -1) {
+    if (distance > greenThreshold) {
+      currentZone = 0;
+    } else if (distance >= yellowThreshold) {
+      currentZone = 1;
+    } else {
+      currentZone = 2;
+    }
+    return currentZone;
+  }
+  
+  // Apply hysteresis based on current zone
+  switch (currentZone) {
+    case 0:  // Currently green
+      // Must go below (greenThreshold - hysteresis) to change to yellow
+      if (distance < greenThreshold - hysteresis) {
+        if (distance < yellowThreshold - hysteresis) {
+          currentZone = 2;  // Red
+        } else {
+          currentZone = 1;  // Yellow
+        }
+      }
+      break;
+      
+    case 1:  // Currently yellow
+      // Must go above (greenThreshold + hysteresis) to change to green
+      if (distance > greenThreshold + hysteresis) {
+        currentZone = 0;  // Green
+      }
+      // Must go below (yellowThreshold - hysteresis) to change to red
+      else if (distance < yellowThreshold - hysteresis) {
+        currentZone = 2;  // Red
+      }
+      break;
+      
+    case 2:  // Currently red
+      // Must go above (yellowThreshold + hysteresis) to change to yellow
+      if (distance > yellowThreshold + hysteresis) {
+        if (distance > greenThreshold + hysteresis) {
+          currentZone = 0;  // Green
+        } else {
+          currentZone = 1;  // Yellow
+        }
+      }
+      break;
+  }
+  
+  return currentZone;
 }
 
-// Function to open a relay
+long getRawReading() {
+  long duration, distance, distance_in;
+  
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  duration = pulseIn(echoPin, HIGH);
+  
+  distance = (duration / 2) / 29.1;
+  distance_in = distance * 0.393701;
+  
+  return distance_in;
+}
+
+long getStableDistance() {
+  long reading = getRawReading();
+  
+  Serial.print("Raw: ");
+  Serial.print(reading);
+  Serial.print(" | ");
+  
+  if (lastGoodDistance == 0) {
+    lastGoodDistance = reading;
+    return reading;
+  }
+  
+  long diff = abs(reading - lastGoodDistance);
+  
+  if (diff <= jumpThreshold) {
+    lastGoodDistance = reading;
+    agreementCount = 0;
+    pendingDistance = 0;
+    return reading;
+  }
+  
+  Serial.print("(big jump) ");
+  
+  if (pendingDistance > 0 && abs(reading - pendingDistance) <= 20) {
+    agreementCount++;
+    Serial.print("agree:");
+    Serial.print(agreementCount);
+    Serial.print(" ");
+    
+    if (agreementCount >= requiredAgreements) {
+      lastGoodDistance = reading;
+      agreementCount = 0;
+      pendingDistance = 0;
+      Serial.print("(accepted) ");
+      return reading;
+    }
+  } else {
+    agreementCount = 1;
+    pendingDistance = reading;
+  }
+  
+  return lastGoodDistance;
+}
+
+void updateDisplay(long distance, uint16_t color) {
+  tft.fillRect(20, 50, 200, 80, GC9A01A_BLACK);
+  
+  int xPos = 70;
+  if (distance >= 100) xPos = 30;
+  else if (distance >= 10) xPos = 50;
+  
+  tft.setCursor(xPos, 60);
+  tft.setTextColor(color);
+  tft.setTextSize(8);
+  tft.print(distance);
+}
+
+void setRelayPattern(int activeRelay) {
+  for (int i = 0; i < numRelays; i++) {
+    if (i == activeRelay) {
+      openRelay(i);
+    } else {
+      closeRelay(i);
+    }
+  }
+}
+
 void openRelay(int relayIndex) {
- {
-   digitalWrite(relayPins[relayIndex], HIGH);
- }
- Serial.print("Relay ");
- Serial.print(relayIndex + 1);
- Serial.println(" High");
+  if (relayIndex >= 0 && relayIndex < numRelays) {
+    digitalWrite(relayPins[relayIndex], LOW);
+    Serial.print("Relay ");
+    Serial.print(relayIndex + 1);
+    Serial.println(" ON");
+  }
+}
+
+void closeRelay(int relayIndex) {
+  if (relayIndex >= 0 && relayIndex < numRelays) {
+    digitalWrite(relayPins[relayIndex], HIGH);
+    Serial.print("Relay ");
+    Serial.print(relayIndex + 1);
+    Serial.println(" OFF");
+  }
 }
